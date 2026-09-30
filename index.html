@@ -99,10 +99,42 @@
   function fmt(n) {
     const x = Number(n);
     if (!isFinite(x)) return '—';
-    if (x >= 1e9) return (x / 1e9).toFixed(2) + 'B';
-    if (x >= 1e6) return (x / 1e6).toFixed(1) + 'M';
-    if (x >= 1e3) return (x / 1e3).toFixed(1) + 'K';
+    const abs = Math.abs(x);
+    if (abs >= 1e12) return (x / 1e12).toFixed(2) + 'T';
+    if (abs >= 1e9) return (x / 1e9).toFixed(2) + 'B';
+    if (abs >= 1e6) return (x / 1e6).toFixed(1) + 'M';
+    if (abs >= 1e3) return (x / 1e3).toFixed(1) + 'K';
     return Math.round(x).toLocaleString();
+  }
+
+  /** Pivot/element feeds often return many rows per MBP — roll up before viz. */
+  function aggregateByMbp(rows) {
+    const map = new Map();
+    rows.forEach((r) => {
+      const key = r.mbp.trim();
+      if (!key) return;
+      const cur = map.get(key) || { mbp: key, sent: 0, bounced: 0, clicks: 0, opens: 0 };
+      cur.sent += r.sent;
+      cur.bounced += r.bounced;
+      cur.clicks += r.clicks;
+      cur.opens += r.opens;
+      map.set(key, cur);
+    });
+    let out = Array.from(map.values()).sort((a, b) => b.sent - a.sent);
+    const TOP = 14;
+    if (out.length > TOP) {
+      const head = out.slice(0, TOP);
+      const tail = out.slice(TOP);
+      head.push({
+        mbp: 'Other',
+        sent: tail.reduce((a, r) => a + r.sent, 0),
+        bounced: tail.reduce((a, r) => a + r.bounced, 0),
+        clicks: tail.reduce((a, r) => a + r.clicks, 0),
+        opens: tail.reduce((a, r) => a + r.opens, 0),
+      });
+      out = head;
+    }
+    return out;
   }
 
   function bounceRate(sent, bounced) {
@@ -137,7 +169,7 @@
         opens: opens && data[opens] ? Number(data[opens][i]) || 0 : 0,
       });
     }
-    return rows.length ? rows : null;
+    return rows.length ? aggregateByMbp(rows) : null;
   }
 
   function Arena({ rows, title, focus, setFocus }) {
@@ -190,13 +222,16 @@
 
         const maxSent = Math.max(...rows.map((r) => r.sent), 1);
         const sorted = [...rows].sort((a, b) => b.sent - a.sent);
+        const n = sorted.length;
 
         sorted.forEach((row, idx) => {
-          const angle = (idx / sorted.length) * Math.PI * 2 - Math.PI / 2 + Math.sin(t * 0.35 + idx) * 0.04;
-          const dist = maxR * (0.42 + (idx % 3) * 0.12);
+          const angle = (idx / n) * Math.PI * 2 - Math.PI / 2 + Math.sin(t * 0.35 + idx) * 0.06;
+          const ring = idx === 0 ? 0.18 : 0.38 + ((idx - 1) % 3) * 0.14;
+          const dist = maxR * ring;
           const x = cx + Math.cos(angle) * dist;
-          const y = cy + Math.sin(angle) * dist * 0.82;
-          const radius = 14 + Math.sqrt(row.sent / maxSent) * 56;
+          const y = cy + Math.sin(angle) * dist * 0.85;
+          const share = row.sent > 0 ? Math.log10(row.sent + 1) / Math.log10(maxSent + 1) : 0;
+          const radius = 12 + share * 52;
           const rate = bounceRate(row.sent, row.bounced);
           const isFocus = focus && focus.mbp === row.mbp;
           const pulse = 1 + (isFocus ? 0.08 : 0.04) * Math.sin(t * 3 + idx);
@@ -285,13 +320,16 @@
       const maxR = Math.min(w, h) * 0.38;
       const maxSent = Math.max(...rows.map((r) => r.sent), 1);
       const sorted = [...rows].sort((a, b) => b.sent - a.sent);
+      const n = sorted.length;
       let hit = null;
       sorted.forEach((row, idx) => {
-        const angle = (idx / sorted.length) * Math.PI * 2 - Math.PI / 2;
-        const dist = maxR * (0.42 + (idx % 3) * 0.12);
+        const angle = (idx / n) * Math.PI * 2 - Math.PI / 2;
+        const ring = idx === 0 ? 0.18 : 0.38 + ((idx - 1) % 3) * 0.14;
+        const dist = maxR * ring;
         const ox = cx + Math.cos(angle) * dist;
-        const oy = cy + Math.sin(angle) * dist * 0.82;
-        const radius = 14 + Math.sqrt(row.sent / maxSent) * 56;
+        const oy = cy + Math.sin(angle) * dist * 0.85;
+        const share = row.sent > 0 ? Math.log10(row.sent + 1) / Math.log10(maxSent + 1) : 0;
+        const radius = 12 + share * 52;
         const dx = x - ox;
         const dy = y - oy;
         if (dx * dx + dy * dy <= radius * radius) hit = row;
