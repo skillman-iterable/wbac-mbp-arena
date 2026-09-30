@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WBAC MBP Thunderdome v3</title>
+  <title>WBAC MBP Thunderdome v4</title>
   <style>
     html, body, #root {
       margin: 0;
@@ -77,9 +77,9 @@
       box-shadow: 0 0 30px rgba(56, 189, 248, 0.25);
     }
     .rank-panel {
-      flex: 0 0 38%;
-      min-height: 140px;
-      max-height: 42%;
+      flex: 0 0 22%;
+      min-height: 100px;
+      max-height: 28%;
       overflow-y: auto;
       padding: 8px 16px 12px;
       background: linear-gradient(180deg, rgba(7, 11, 20, 0) 0%, rgba(7, 11, 20, 0.95) 12%);
@@ -131,10 +131,50 @@
       min-height: 0;
     }
     .arena-canvas-wrap {
-      flex: 1 1 58%;
+      flex: 1 1 42%;
       position: relative;
-      min-height: 180px;
+      min-height: 160px;
     }
+    .data-table-panel {
+      flex: 0 0 30%;
+      min-height: 120px;
+      max-height: 34%;
+      overflow: auto;
+      border-top: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.92);
+      pointer-events: auto;
+    }
+    .data-table-panel h3 {
+      margin: 0;
+      padding: 8px 12px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #94a3b8;
+    }
+    .data-table-panel table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .data-table-panel th {
+      position: sticky;
+      top: 0;
+      background: #0f172a;
+      color: #cbd5e1;
+      text-align: left;
+      padding: 6px 10px;
+      border-bottom: 1px solid #334155;
+    }
+    .data-table-panel td {
+      padding: 5px 10px;
+      color: #e2e8f0;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+    }
+    .data-table-panel tr:hover td { background: rgba(56, 189, 248, 0.08); }
+    .data-table-panel tr.active td { background: rgba(56, 189, 248, 0.15); }
+    .data-table-panel td.num { text-align: right; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -283,6 +323,53 @@
       });
     }
     return nodes;
+  }
+
+  function DataTable({ rows, focus, setFocus }) {
+    return h(
+      'div',
+      { className: 'data-table-panel' },
+      h('h3', null, 'Data behind this visual'),
+      h(
+        'table',
+        null,
+        h(
+          'thead',
+          null,
+          h('tr', null,
+            h('th', null, 'MBP'),
+            h('th', null, 'Sent'),
+            h('th', null, 'Bounced'),
+            h('th', null, 'Bounce %'),
+            h('th', null, 'Clicks'),
+            h('th', null, 'Opens')
+          )
+        ),
+        h(
+          'tbody',
+          null,
+          rows.map((row) => {
+            const rate = bounceRate(row.sent, row.bounced);
+            const active = focus && focus.mbp === row.mbp;
+            return h(
+              'tr',
+              {
+                key: row.mbp,
+                className: active ? 'active' : '',
+                onClick: () => setFocus(row),
+                style: { cursor: 'pointer' },
+              },
+              h('td', null, row.mbp),
+              h('td', { className: 'num' }, fmt(row.sent)),
+              h('td', { className: 'num' }, fmt(row.bounced)),
+              h('td', { className: 'num' }, (rate * 100).toFixed(2) + '%'),
+              h('td', { className: 'num' }, fmt(row.clicks)),
+              h('td', { className: 'num' }, fmt(row.opens))
+            );
+          })
+        )
+      )
+    );
   }
 
   function RankBars({ rows, focus, setFocus, maxSent }) {
@@ -451,7 +538,8 @@
         ),
         h(ClickLayer, { layoutRef, focus, setFocus, canvasRef })
       ),
-      h(RankBars, { rows: sorted, focus, setFocus, maxSent })
+      h(RankBars, { rows: sorted, focus, setFocus, maxSent }),
+      h(DataTable, { rows: sorted, focus, setFocus })
     );
   }
 
