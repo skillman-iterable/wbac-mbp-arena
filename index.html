@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WBAC MBP Thunderdome</title>
+  <style>
+    html, body, #root {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #070b14;
+      font-family: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    #root { position: relative; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .hud {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 16px 20px;
+      box-sizing: border-box;
+    }
+    .hud-top h1 {
+      margin: 0;
+      font-size: clamp(18px, 2.4vw, 28px);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: #f8fafc;
+      text-shadow: 0 0 24px rgba(56, 189, 248, 0.45);
+    }
+    .hud-top p {
+      margin: 6px 0 0;
+      color: #94a3b8;
+      font-size: 13px;
+      max-width: 52ch;
+    }
+    .hud-bottom {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
+    .chip {
+      pointer-events: auto;
+      background: rgba(15, 23, 42, 0.82);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 12px;
+      padding: 10px 14px;
+      min-width: 120px;
+      backdrop-filter: blur(8px);
+    }
+    .chip strong { display: block; color: #e2e8f0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .chip span { color: #38bdf8; font-size: 20px; font-weight: 700; }
+    .legend {
+      pointer-events: none;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    .legend i {
+      display: inline-block;
+      width: 36px;
+      height: 8px;
+      border-radius: 4px;
+      background: linear-gradient(90deg, #22c55e, #eab308, #ef4444);
+    }
+    .focus-card {
+      pointer-events: none;
+      border-color: rgba(56, 189, 248, 0.55);
+      box-shadow: 0 0 30px rgba(56, 189, 248, 0.25);
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@sigmacomputing/plugin"></script>
+  <script>
+(function () {
+  const { useState, useEffect, useRef, useMemo, createElement: h } = React;
+
+  const SYNTH = [
+    { mbp: 'Gmail', sent: 9.2e9, bounced: 1.1e8, clicks: 4.5e8, opens: 2.1e9 },
+    { mbp: 'Yahoo', sent: 2.4e9, bounced: 4.2e7, clicks: 9.8e7, opens: 5.1e8 },
+    { mbp: 'Microsoft', sent: 3.8e9, bounced: 5.5e7, clicks: 1.4e8, opens: 8.2e8 },
+    { mbp: 'Apple', sent: 1.6e9, bounced: 1.2e7, clicks: 6.2e7, opens: 4.4e8 },
+    { mbp: 'Comcast', sent: 0.9e9, bounced: 2.8e7, clicks: 3.1e7, opens: 1.9e8 },
+    { mbp: 'Other', sent: 5.1e9, bounced: 9.4e7, clicks: 2.2e8, opens: 1.1e9 },
+  ];
+
+  function fmt(n) {
+    const x = Number(n);
+    if (!isFinite(x)) return '—';
+    if (x >= 1e9) return (x / 1e9).toFixed(2) + 'B';
+    if (x >= 1e6) return (x / 1e6).toFixed(1) + 'M';
+    if (x >= 1e3) return (x / 1e3).toFixed(1) + 'K';
+    return Math.round(x).toLocaleString();
+  }
+
+  function bounceRate(sent, bounced) {
+    const s = Number(sent), b = Number(bounced);
+    if (!isFinite(s) || s <= 0) return 0;
+    return b / s;
+  }
+
+  function colorForRate(rate) {
+    const t = Math.max(0, Math.min(1, rate / 0.04));
+    const r = Math.round(34 + t * (239 - 34));
+    const g = Math.round(197 - t * (197 - 68));
+    const b = Math.round(94 - t * 94);
+    return `rgb(${r},${g},${b})`;
+  }
+
+  function parseRows(data, cfg) {
+    if (!data || !cfg) return null;
+    const { mbp, sent, bounced, clicks, opens } = cfg;
+    if (!mbp || !sent || !bounced || !data[mbp] || !data[sent] || !data[bounced]) return null;
+    const n = data[mbp].length;
+    if (!n) return null;
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      const label = data[mbp][i];
+      if (label == null || label === '') continue;
+      rows.push({
+        mbp: String(label),
+        sent: Number(data[sent][i]) || 0,
+        bounced: Number(data[bounced][i]) || 0,
+        clicks: clicks && data[clicks] ? Number(data[clicks][i]) || 0 : 0,
+        opens: opens && data[opens] ? Number(data[opens][i]) || 0 : 0,
+      });
+    }
+    return rows.length ? rows : null;
+  }
+
+  function Arena({ rows, title, focus, setFocus }) {
+    const canvasRef = useRef(null);
+    const animRef = useRef(0);
+    const sizeRef = useRef({ w: 800, h: 500 });
+
+    const stats = useMemo(() => {
+      const totalSent = rows.reduce((a, r) => a + r.sent, 0);
+      const totalBounced = rows.reduce((a, r) => a + r.bounced, 0);
+      const avgBounce = bounceRate(totalSent, totalBounced);
+      const leader = rows.reduce((best, r) => (r.sent > (best?.sent || 0) ? r : best), null);
+      return { totalSent, totalBounced, avgBounce, leader };
+    }, [rows]);
+
+    useEffect(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const root = canvas.parentElement;
+      let t0 = performance.now();
+
+      function draw(now) {
+        const t = (now - t0) / 1000;
+        const rect = root.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const w = Math.max(320, rect.width);
+        const h = Math.max(240, rect.height);
+        sizeRef.current = { w, h };
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        canvas.style.width = w + 'px';
+        canvas.style.height = h + 'px';
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        ctx.fillStyle = '#070b14';
+        ctx.fillRect(0, 0, w, h);
+
+        const cx = w * 0.5;
+        const cy = h * 0.54;
+        const maxR = Math.min(w, h) * 0.38;
+
+        for (let i = 0; i < 3; i++) {
+          ctx.beginPath();
+          ctx.strokeStyle = `rgba(56, 189, 248, ${0.08 + i * 0.04})`;
+          ctx.lineWidth = 1;
+          ctx.arc(cx, cy, maxR * (0.55 + i * 0.22) + Math.sin(t * 0.8 + i) * 4, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        const maxSent = Math.max(...rows.map((r) => r.sent), 1);
+        const sorted = [...rows].sort((a, b) => b.sent - a.sent);
+
+        sorted.forEach((row, idx) => {
+          const angle = (idx / sorted.length) * Math.PI * 2 - Math.PI / 2 + Math.sin(t * 0.35 + idx) * 0.04;
+          const dist = maxR * (0.42 + (idx % 3) * 0.12);
+          const x = cx + Math.cos(angle) * dist;
+          const y = cy + Math.sin(angle) * dist * 0.82;
+          const radius = 14 + Math.sqrt(row.sent / maxSent) * 56;
+          const rate = bounceRate(row.sent, row.bounced);
+          const isFocus = focus && focus.mbp === row.mbp;
+          const pulse = 1 + (isFocus ? 0.08 : 0.04) * Math.sin(t * 3 + idx);
+
+          const grd = ctx.createRadialGradient(x, y, radius * 0.1, x, y, radius * pulse);
+          grd.addColorStop(0, colorForRate(rate * 0.65));
+          grd.addColorStop(1, colorForRate(rate));
+          ctx.beginPath();
+          ctx.fillStyle = grd;
+          ctx.globalAlpha = isFocus ? 1 : 0.88;
+          ctx.arc(x, y, radius * pulse, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+
+          if (isFocus) {
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.9)';
+            ctx.lineWidth = 2;
+            ctx.arc(x, y, radius * pulse + 6, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+
+          ctx.fillStyle = '#f8fafc';
+          ctx.font = `${Math.max(10, radius * 0.22)}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(row.mbp, x, y);
+        });
+
+        animRef.current = requestAnimationFrame(draw);
+      }
+
+      animRef.current = requestAnimationFrame(draw);
+      const ro = new ResizeObserver(() => {
+        cancelAnimationFrame(animRef.current);
+        animRef.current = requestAnimationFrame(draw);
+      });
+      ro.observe(root);
+      return () => {
+        cancelAnimationFrame(animRef.current);
+        ro.disconnect();
+      };
+    }, [rows, focus]);
+
+    const focused = focus || stats.leader;
+
+    return h('div', { style: { width: '100%', height: '100%', position: 'relative' } },
+      h('canvas', { ref: canvasRef }),
+      h('div', { className: 'hud' },
+        h('div', { className: 'hud-top' },
+          h('h1', null, title || 'MBP Thunderdome'),
+          h('p', null, 'Orb size = send volume · Color = bounce rate · Click an orb to spotlight a mailbox provider.')
+        ),
+        h('div', { className: 'hud-bottom' },
+          h('div', { className: 'chip' },
+            h('strong', null, 'Total sent'),
+            h('span', null, fmt(stats.totalSent))
+          ),
+          h('div', { className: 'chip' },
+            h('strong', null, 'Avg bounce'),
+            h('span', null, (stats.avgBounce * 100).toFixed(2) + '%')
+          ),
+          focused && h('div', { className: 'chip focus-card' },
+            h('strong', null, focused.mbp),
+            h('span', null, (bounceRate(focused.sent, focused.bounced) * 100).toFixed(2) + '% bounce')
+          ),
+          h('div', { className: 'legend' },
+            h('i'), 'Healthy → stressed'
+          )
+        )
+      ),
+      h(ClickLayer, { rows, focus, setFocus, canvasRef, sizeRef })
+    );
+  }
+
+  function ClickLayer({ rows, focus, setFocus, canvasRef, sizeRef }) {
+    const onClick = (e) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const { w, h } = sizeRef.current;
+      const cx = w * 0.5;
+      const cy = h * 0.54;
+      const maxR = Math.min(w, h) * 0.38;
+      const maxSent = Math.max(...rows.map((r) => r.sent), 1);
+      const sorted = [...rows].sort((a, b) => b.sent - a.sent);
+      let hit = null;
+      sorted.forEach((row, idx) => {
+        const angle = (idx / sorted.length) * Math.PI * 2 - Math.PI / 2;
+        const dist = maxR * (0.42 + (idx % 3) * 0.12);
+        const ox = cx + Math.cos(angle) * dist;
+        const oy = cy + Math.sin(angle) * dist * 0.82;
+        const radius = 14 + Math.sqrt(row.sent / maxSent) * 56;
+        const dx = x - ox;
+        const dy = y - oy;
+        if (dx * dx + dy * dy <= radius * radius) hit = row;
+      });
+      setFocus(hit || focus);
+    };
+    return h('div', {
+      style: { position: 'absolute', inset: 0, cursor: 'pointer' },
+      onClick,
+    });
+  }
+
+  function App() {
+    const [rows, setRows] = useState(SYNTH);
+    const [title, setTitle] = useState('MBP Thunderdome');
+    const [focus, setFocus] = useState(null);
+
+    useEffect(() => {
+      const client = (window.SigmaPlugin && window.SigmaPlugin.client) || (window.Sigma && window.Sigma.client);
+      if (!client) return;
+
+      client.config.configureEditorPanel([
+        { name: 'source', type: 'element' },
+        { name: 'mbp', type: 'column', source: 'source', allowMultiple: false },
+        { name: 'sent', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
+        { name: 'bounced', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
+        { name: 'clicks', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
+        { name: 'opens', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
+        { name: 'title', type: 'text', defaultValue: 'MBP Thunderdome' },
+      ]);
+
+      let unsubData = null;
+      const unsubCfg = client.config.subscribe((config) => {
+        if (unsubData) { unsubData(); unsubData = null; }
+        setTitle((config && config.title) || 'MBP Thunderdome');
+        const sourceId = config && config.source;
+        if (!sourceId) {
+          setRows(SYNTH);
+          return;
+        }
+        unsubData = client.elements.subscribeToElementData(sourceId, (data) => {
+          const parsed = parseRows(data, config);
+          setRows(parsed || SYNTH);
+          setFocus(null);
+        });
+      });
+      return () => {
+        if (unsubData) unsubData();
+        if (unsubCfg) unsubCfg();
+      };
+    }, []);
+
+    return h(Arena, { rows, title, focus, setFocus });
+  }
+
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(h(App));
+})();
+  </script>
+</body>
+</html>
