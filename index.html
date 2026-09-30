@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WBAC MBP Thunderdome v4</title>
+  <title>WBAC MBP Thunderdome v5</title>
+  <link rel="stylesheet" href="https://unpkg.com/react-calendar-heatmap@1.9.0/dist/styles.css" />
   <style>
     html, body, #root {
       margin: 0;
@@ -136,9 +137,9 @@
       min-height: 160px;
     }
     .data-table-panel {
-      flex: 0 0 30%;
-      min-height: 120px;
-      max-height: 34%;
+      flex: 0 0 24%;
+      min-height: 100px;
+      max-height: 28%;
       overflow: auto;
       border-top: 1px solid rgba(148, 163, 184, 0.25);
       background: rgba(15, 23, 42, 0.92);
@@ -175,6 +176,30 @@
     .data-table-panel tr:hover td { background: rgba(56, 189, 248, 0.08); }
     .data-table-panel tr.active td { background: rgba(56, 189, 248, 0.15); }
     .data-table-panel td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .heatmap-panel {
+      flex: 0 0 26%;
+      min-height: 110px;
+      padding: 8px 12px 12px;
+      border-top: 1px solid rgba(148, 163, 184, 0.25);
+      background: #0f172a;
+      overflow-x: auto;
+      pointer-events: auto;
+    }
+    .heatmap-panel h3 {
+      margin: 0 0 6px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #94a3b8;
+    }
+    .heatmap-panel .react-calendar-heatmap { width: 100%; min-width: 520px; }
+    .heatmap-panel .react-calendar-heatmap .color-empty { fill: #1e293b; }
+    .heatmap-panel .react-calendar-heatmap .color-scale-1 { fill: #164e63; }
+    .heatmap-panel .react-calendar-heatmap .color-scale-2 { fill: #0891b2; }
+    .heatmap-panel .react-calendar-heatmap .color-scale-3 { fill: #22d3ee; }
+    .heatmap-panel .react-calendar-heatmap .color-scale-4 { fill: #67e8f9; }
+    .heatmap-panel .react-calendar-heatmap text { fill: #64748b; font-size: 8px; }
   </style>
 </head>
 <body>
@@ -182,6 +207,7 @@
   <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@sigmacomputing/plugin"></script>
+  <script src="https://unpkg.com/react-calendar-heatmap@1.9.0/dist/react-calendar-heatmap.umd.js"></script>
   <script>
 (function () {
   const { useState, useEffect, useRef, useMemo, createElement: h } = React;
@@ -250,9 +276,27 @@
     return `rgb(${r},${g},${b})`;
   }
 
+  function colId(cfg, key) {
+    const v = cfg && cfg[key];
+    if (!v) return null;
+    if (typeof v === 'string') return v;
+    return v.columnId || null;
+  }
+
+  function elementId(cfg, key) {
+    const v = cfg && cfg[key];
+    if (!v) return null;
+    if (typeof v === 'string') return v;
+    return v.elementId || null;
+  }
+
   function parseRows(data, cfg) {
     if (!data || !cfg) return null;
-    const { mbp, sent, bounced, clicks, opens } = cfg;
+    const mbp = colId(cfg, 'mbp');
+    const sent = colId(cfg, 'sent');
+    const bounced = colId(cfg, 'bounced');
+    const clicks = colId(cfg, 'clicks');
+    const opens = colId(cfg, 'opens');
     if (!mbp || !sent || !bounced || !data[mbp] || !data[sent] || !data[bounced]) return null;
     const n = data[mbp].length;
     if (!n) return null;
@@ -269,6 +313,75 @@
       });
     }
     return rows.length ? aggregateByMbp(rows) : null;
+  }
+
+  function dayKey(raw) {
+    if (raw == null) return null;
+    const d = raw instanceof Date ? raw : new Date(raw);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  }
+
+  function parseHeatmap(data, cfg) {
+    const dateCol = colId(cfg, 'heatDate');
+    const valueCol = colId(cfg, 'heatValue');
+    if (!data || !dateCol || !valueCol || !data[dateCol] || !data[valueCol]) return null;
+    const map = new Map();
+    const n = data[dateCol].length;
+    for (let i = 0; i < n; i++) {
+      const key = dayKey(data[dateCol][i]);
+      if (!key) continue;
+      const v = Number(data[valueCol][i]) || 0;
+      map.set(key, (map.get(key) || 0) + v);
+    }
+    const values = Array.from(map, ([date, count]) => ({ date, count }));
+    return values.length ? values : null;
+  }
+
+  function demoHeatmap() {
+    const out = [];
+    const end = new Date();
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(end);
+      d.setDate(d.getDate() - i);
+      out.push({ date: d.toISOString().slice(0, 10), count: Math.floor(Math.random() * 12) });
+    }
+    return out;
+  }
+
+  function SendHeatmap({ values }) {
+    const Cal = (window.CalendarHeatmap && (window.CalendarHeatmap.default || window.CalendarHeatmap));
+    const endDate = useMemo(() => new Date(), []);
+    const startDate = useMemo(() => {
+      const s = new Date();
+      s.setFullYear(s.getFullYear() - 1);
+      return s;
+    }, []);
+    const max = useMemo(() => Math.max(...values.map((v) => v.count), 1), [values]);
+    if (!Cal) {
+      return h('div', { className: 'heatmap-panel' }, h('h3', null, 'Daily send heatmap'), h('p', { style: { color: '#94a3b8', fontSize: 12 } }, 'Calendar heatmap library failed to load.'));
+    }
+    return h(
+      'div',
+      { className: 'heatmap-panel' },
+      h('h3', null, 'Daily send volume (react-calendar-heatmap)'),
+      h(Cal, {
+        startDate,
+        endDate,
+        values,
+        showWeekdayLabels: true,
+        showMonthLabels: true,
+        classForValue: (value) => {
+          if (!value || !value.count) return 'color-empty';
+          const t = value.count / max;
+          if (t < 0.25) return 'color-scale-1';
+          if (t < 0.5) return 'color-scale-2';
+          if (t < 0.75) return 'color-scale-3';
+          return 'color-scale-4';
+        },
+        titleForValue: (value) => (value && value.date ? value.date + ': ' + fmt(value.count) + ' sent' : 'No data'),
+      })
+    );
   }
 
   function computeLayout(sorted, w, h) {
@@ -403,7 +516,7 @@
     );
   }
 
-  function Arena({ rows, title, focus, setFocus }) {
+  function Arena({ rows, title, focus, setFocus, heatmapValues }) {
     const canvasRef = useRef(null);
     const animRef = useRef(0);
     const sizeRef = useRef({ w: 800, h: 500 });
@@ -539,7 +652,8 @@
         h(ClickLayer, { layoutRef, focus, setFocus, canvasRef })
       ),
       h(RankBars, { rows: sorted, focus, setFocus, maxSent }),
-      h(DataTable, { rows: sorted, focus, setFocus })
+      h(DataTable, { rows: sorted, focus, setFocus }),
+      h(SendHeatmap, { values: heatmapValues })
     );
   }
 
@@ -569,6 +683,7 @@
     const [rows, setRows] = useState(SYNTH);
     const [title, setTitle] = useState('MBP Thunderdome');
     const [focus, setFocus] = useState(null);
+    const [heatmapValues, setHeatmapValues] = useState(demoHeatmap());
 
     useEffect(() => {
       const client = (window.SigmaPlugin && window.SigmaPlugin.client) || (window.Sigma && window.Sigma.client);
@@ -576,36 +691,50 @@
 
       client.config.configureEditorPanel([
         { name: 'source', type: 'element' },
+        { name: 'dailySource', type: 'element' },
         { name: 'mbp', type: 'column', source: 'source', allowMultiple: false },
         { name: 'sent', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
         { name: 'bounced', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
         { name: 'clicks', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
         { name: 'opens', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
+        { name: 'heatDate', type: 'column', source: 'dailySource', allowMultiple: false, allowedTypes: ['datetime', 'date'] },
+        { name: 'heatValue', type: 'column', source: 'dailySource', allowMultiple: false, allowedTypes: ['number', 'integer'] },
         { name: 'title', type: 'text', defaultValue: 'MBP Thunderdome' },
       ]);
 
       let unsubData = null;
+      let unsubHeat = null;
       const unsubCfg = client.config.subscribe((config) => {
         if (unsubData) { unsubData(); unsubData = null; }
+        if (unsubHeat) { unsubHeat(); unsubHeat = null; }
         setTitle((config && config.title) || 'MBP Thunderdome');
-        const sourceId = config && config.source;
+        const sourceId = elementId(config, 'source');
+        const dailyId = elementId(config, 'dailySource');
         if (!sourceId) {
           setRows(SYNTH);
-          return;
+        } else {
+          unsubData = client.elements.subscribeToElementData(sourceId, (data) => {
+            const parsed = parseRows(data, config);
+            setRows(parsed || SYNTH);
+            setFocus(null);
+          });
         }
-        unsubData = client.elements.subscribeToElementData(sourceId, (data) => {
-          const parsed = parseRows(data, config);
-          setRows(parsed || SYNTH);
-          setFocus(null);
-        });
+        if (dailyId && colId(config, 'heatDate') && colId(config, 'heatValue')) {
+          unsubHeat = client.elements.subscribeToElementData(dailyId, (data) => {
+            setHeatmapValues(parseHeatmap(data, config) || demoHeatmap());
+          });
+        } else {
+          setHeatmapValues(demoHeatmap());
+        }
       });
       return () => {
         if (unsubData) unsubData();
+        if (unsubHeat) unsubHeat();
         if (unsubCfg) unsubCfg();
       };
     }, []);
 
-    return h(Arena, { rows, title, focus, setFocus });
+    return h(Arena, { rows, title, focus, setFocus, heatmapValues });
   }
 
   const root = ReactDOM.createRoot(document.getElementById('root'));
