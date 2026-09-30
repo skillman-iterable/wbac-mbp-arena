@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WBAC MBP Thunderdome v5</title>
+  <title>WBAC MBP Thunderdome v6</title>
   <link rel="stylesheet" href="https://unpkg.com/react-calendar-heatmap@1.9.0/dist/styles.css" />
   <style>
     html, body, #root {
@@ -200,6 +200,15 @@
     .heatmap-panel .react-calendar-heatmap .color-scale-3 { fill: #22d3ee; }
     .heatmap-panel .react-calendar-heatmap .color-scale-4 { fill: #67e8f9; }
     .heatmap-panel .react-calendar-heatmap text { fill: #64748b; font-size: 8px; }
+    .heatmap-panel .react-calendar-heatmap rect { cursor: pointer; }
+    .heatmap-panel .react-calendar-heatmap .color-selected { stroke: #f8fafc; stroke-width: 2px; }
+    .heatmap-hint {
+      margin: 0 0 6px;
+      font-size: 11px;
+      color: #64748b;
+      line-height: 1.35;
+    }
+    .heatmap-hint strong { color: #38bdf8; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -315,6 +324,34 @@
     return rows.length ? aggregateByMbp(rows) : null;
   }
 
+  function toIsoDate(raw) {
+    if (raw == null || raw === '') return null;
+    if (raw instanceof Date && !isNaN(raw.getTime())) return raw.toISOString().slice(0, 10);
+    const fromKey = dayKey(raw);
+    if (fromKey) return fromKey;
+    const s = String(raw).slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  }
+
+  function setWorkbookDateFilter(client, configKey, isoDate) {
+    if (!client || !configKey || !isoDate) return false;
+    const attempts = [
+      () => client.config.setVariable(
+        configKey,
+        { type: 'date', value: isoDate },
+        { type: 'date', value: isoDate }
+      ),
+      () => client.config.setVariable(configKey, isoDate, isoDate),
+    ];
+    for (const run of attempts) {
+      try {
+        run();
+        return true;
+      } catch (_) { /* try next shape */ }
+    }
+    return false;
+  }
+
   function dayKey(raw) {
     if (raw == null) return null;
     const d = raw instanceof Date ? raw : new Date(raw);
@@ -349,7 +386,7 @@
     return out;
   }
 
-  function SendHeatmap({ values }) {
+  function SendHeatmap({ values, selectedDate, onDateClick, dateFilterBound }) {
     const Cal = (window.CalendarHeatmap && (window.CalendarHeatmap.default || window.CalendarHeatmap));
     const endDate = useMemo(() => new Date(), []);
     const startDate = useMemo(() => {
@@ -361,25 +398,42 @@
     if (!Cal) {
       return h('div', { className: 'heatmap-panel' }, h('h3', null, 'Daily send heatmap'), h('p', { style: { color: '#94a3b8', fontSize: 12 } }, 'Calendar heatmap library failed to load.'));
     }
+    const hint = dateFilterBound
+      ? (selectedDate
+        ? h('p', { className: 'heatmap-hint' }, 'Workbook filtered to ', h('strong', null, selectedDate), '. Clear the Created Date control to reset.')
+        : h('p', { className: 'heatmap-hint' }, 'Click a day to set Created Date and filter this page (arena, Thunderdome source table, ES_TOTAL_MBP).'))
+      : h('p', { className: 'heatmap-hint' }, 'In plugin settings, bind Date filter control to Created Date (Wbac3-Cust-Date) to enable click-to-filter.');
     return h(
       'div',
       { className: 'heatmap-panel' },
       h('h3', null, 'Daily send volume (react-calendar-heatmap)'),
+      hint,
       h(Cal, {
         startDate,
         endDate,
         values,
         showWeekdayLabels: true,
         showMonthLabels: true,
+        onClick: (value) => {
+          if (!value || !value.date) return;
+          const iso = toIsoDate(value.date);
+          if (iso) onDateClick(iso);
+        },
         classForValue: (value) => {
           if (!value || !value.count) return 'color-empty';
+          const iso = toIsoDate(value.date);
+          const selected = iso && selectedDate && iso === selectedDate;
           const t = value.count / max;
-          if (t < 0.25) return 'color-scale-1';
-          if (t < 0.5) return 'color-scale-2';
-          if (t < 0.75) return 'color-scale-3';
-          return 'color-scale-4';
+          let scale = 'color-scale-4';
+          if (t < 0.25) scale = 'color-scale-1';
+          else if (t < 0.5) scale = 'color-scale-2';
+          else if (t < 0.75) scale = 'color-scale-3';
+          return selected ? scale + ' color-selected' : scale;
         },
-        titleForValue: (value) => (value && value.date ? value.date + ': ' + fmt(value.count) + ' sent' : 'No data'),
+        titleForValue: (value) => {
+          if (!value || !value.date) return 'No data';
+          return value.date + ': ' + fmt(value.count) + ' sent — click to filter workbook';
+        },
       })
     );
   }
@@ -516,7 +570,7 @@
     );
   }
 
-  function Arena({ rows, title, focus, setFocus, heatmapValues }) {
+  function Arena({ rows, title, focus, setFocus, heatmapValues, selectedDate, onHeatmapDateClick, dateFilterBound }) {
     const canvasRef = useRef(null);
     const animRef = useRef(0);
     const sizeRef = useRef({ w: 800, h: 500 });
@@ -653,7 +707,12 @@
       ),
       h(RankBars, { rows: sorted, focus, setFocus, maxSent }),
       h(DataTable, { rows: sorted, focus, setFocus }),
-      h(SendHeatmap, { values: heatmapValues })
+      h(SendHeatmap, {
+        values: heatmapValues,
+        selectedDate,
+        onDateClick: onHeatmapDateClick,
+        dateFilterBound,
+      })
     );
   }
 
@@ -684,10 +743,26 @@
     const [title, setTitle] = useState('MBP Thunderdome');
     const [focus, setFocus] = useState(null);
     const [heatmapValues, setHeatmapValues] = useState(demoHeatmap());
+    const [selectedDate, setSelectedDate] = useState(null);
+    const [dateFilterBound, setDateFilterBound] = useState(false);
+    const sigmaClientRef = useRef(null);
+    const dateFilterKeyRef = useRef('dateFilter');
+
+    const onHeatmapDateClick = (isoDate) => {
+      const client = sigmaClientRef.current;
+      const key = dateFilterKeyRef.current;
+      if (!client || !dateFilterBound) return;
+      if (selectedDate === isoDate) {
+        setSelectedDate(null);
+        return;
+      }
+      if (setWorkbookDateFilter(client, key, isoDate)) setSelectedDate(isoDate);
+    };
 
     useEffect(() => {
       const client = (window.SigmaPlugin && window.SigmaPlugin.client) || (window.Sigma && window.Sigma.client);
       if (!client) return;
+      sigmaClientRef.current = client;
 
       client.config.configureEditorPanel([
         { name: 'source', type: 'element' },
@@ -699,15 +774,41 @@
         { name: 'opens', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
         { name: 'heatDate', type: 'column', source: 'dailySource', allowMultiple: false, allowedTypes: ['datetime', 'date'] },
         { name: 'heatValue', type: 'column', source: 'dailySource', allowMultiple: false, allowedTypes: ['number', 'integer'] },
+        {
+          name: 'dateFilter',
+          type: 'variable',
+          label: 'Date filter control',
+          allowedTypes: ['date-range'],
+        },
         { name: 'title', type: 'text', defaultValue: 'MBP Thunderdome' },
       ]);
 
       let unsubData = null;
       let unsubHeat = null;
+      let unsubDateVar = null;
       const unsubCfg = client.config.subscribe((config) => {
         if (unsubData) { unsubData(); unsubData = null; }
         if (unsubHeat) { unsubHeat(); unsubHeat = null; }
+        if (unsubDateVar) { unsubDateVar(); unsubDateVar = null; }
         setTitle((config && config.title) || 'MBP Thunderdome');
+        const df = config && config.dateFilter;
+        const hasDateFilter = !!(df && (typeof df === 'object' ? (df.controlId || df.kind === 'variable') : df));
+        setDateFilterBound(hasDateFilter);
+        if (hasDateFilter) {
+          unsubDateVar = client.config.subscribeToWorkbookVariable('dateFilter', (variable) => {
+            const val = variable && variable.defaultValue;
+            if (!val) return;
+            if (val.type === 'date-range' && val.value) {
+              const start = val.value.min ?? val.value.start ?? val.value[0];
+              const end = val.value.max ?? val.value.end ?? val.value[1];
+              const s = toIsoDate(start);
+              const e = toIsoDate(end);
+              setSelectedDate(s && e && s === e ? s : null);
+            } else if (val.type === 'date') {
+              setSelectedDate(toIsoDate(val.value));
+            }
+          });
+        }
         const sourceId = elementId(config, 'source');
         const dailyId = elementId(config, 'dailySource');
         if (!sourceId) {
@@ -730,11 +831,21 @@
       return () => {
         if (unsubData) unsubData();
         if (unsubHeat) unsubHeat();
+        if (unsubDateVar) unsubDateVar();
         if (unsubCfg) unsubCfg();
       };
     }, []);
 
-    return h(Arena, { rows, title, focus, setFocus, heatmapValues });
+    return h(Arena, {
+      rows,
+      title,
+      focus,
+      setFocus,
+      heatmapValues,
+      selectedDate,
+      onHeatmapDateClick,
+      dateFilterBound,
+    });
   }
 
   const root = ReactDOM.createRoot(document.getElementById('root'));
