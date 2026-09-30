@@ -3,19 +3,33 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WBAC D3 Brush Scatter</title>
+  <title>WBAC D3 Brush Scatter v2</title>
   <style>
     html, body, #root { margin: 0; width: 100%; height: 100%; background: #f8fafc; font-family: system-ui, sans-serif; }
-    #root { display: flex; flex-direction: column; box-sizing: border-box; padding: 12px 14px; }
+    #root { display: flex; flex-direction: column; box-sizing: border-box; padding: 12px 14px; overflow: hidden; }
     h2 { margin: 0 0 4px; font-size: 16px; color: #0f172a; }
-    .sub { margin: 0 0 8px; font-size: 12px; color: #64748b; max-width: 70ch; }
-    .chart-host { flex: 1; min-height: 200px; position: relative; }
+    .sub { margin: 0 0 8px; font-size: 12px; color: #64748b; max-width: 72ch; }
+    .main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0; }
+    .chart-wrap { flex: 0 0 52%; min-height: 200px; display: flex; flex-direction: column; }
+    .chart-host { flex: 1; min-height: 160px; position: relative; }
     .chart-host svg { display: block; width: 100%; height: 100%; }
     circle.dot { opacity: 0.55; stroke: #fff; stroke-width: 1px; }
     circle.dot.selected { opacity: 1 !important; stroke: #0f172a; stroke-width: 1.5px; }
-    .selection-hud {
-      font-size: 12px; color: #334155; padding: 6px 0 0;
+    .selection-hud { font-size: 12px; color: #334155; padding: 6px 0 4px; }
+    .data-table-panel {
+      flex: 1; min-height: 120px; overflow: auto;
+      border-top: 1px solid #e2e8f0; padding-top: 10px; margin-top: 4px;
     }
+    .data-table-panel h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: #0f172a; }
+    .data-table-panel table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .data-table-panel th {
+      text-align: left; padding: 6px 8px; background: #f1f5f9; color: #475569;
+      font-weight: 600; position: sticky; top: 0; z-index: 1;
+    }
+    .data-table-panel td { padding: 5px 8px; border-bottom: 1px solid #f1f5f9; color: #1e293b; }
+    .data-table-panel tr.brushed td { background: #e0f2fe; }
+    .data-table-panel td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .table-meta { font-size: 11px; color: #64748b; margin-bottom: 6px; }
   </style>
 </head>
 <body>
@@ -32,34 +46,99 @@
     x: 4 + Math.random() * 4,
     y: Math.random() * 9,
     g: ['setosa', 'versicolor', 'virginica'][i % 3],
-    label: 'demo-' + i,
+    rowIndex: i,
+  }));
+
+  const DEMO_ROWS = DEMO.map((p) => ({
+    group: p.g,
+    x: p.x,
+    y: p.y,
   }));
 
   const PALETTE = ['#440154', '#21908d', '#fde725', '#3b82f6', '#ef4444', '#a855f7', '#14b8a6'];
+  const TABLE_CAP = 500;
 
-  function parsePoints(data, cfg) {
-    if (!data || !cfg || !cfg.x || !cfg.y) return null;
-    const n = (data[cfg.x] || []).length;
-    if (!n) return null;
-    const pts = [];
-    for (let i = 0; i < n; i++) {
-      const x = Number(data[cfg.x][i]);
-      const y = Number(data[cfg.y][i]);
-      if (!isFinite(x) || !isFinite(y)) continue;
-      const g = cfg.group && data[cfg.group] ? String(data[cfg.group][i] ?? '') : 'all';
-      pts.push({ x, y, g, label: g + '-' + i });
-    }
-    if (pts.length > 2500) {
-      const step = Math.ceil(pts.length / 2500);
-      return pts.filter((_, i) => i % step === 0);
-    }
-    return pts.length ? pts : null;
+  function colId(cfg, key) {
+    const v = cfg && cfg[key];
+    if (!v) return null;
+    if (typeof v === 'string') return v;
+    return v.columnId || null;
   }
 
-  function BrushChart({ points, xLabel, yLabel }) {
+  function elementId(cfg, key) {
+    const v = cfg && cfg[key];
+    if (!v) return null;
+    if (typeof v === 'string') return v;
+    return v.elementId || null;
+  }
+
+  function shortColName(id) {
+    if (!id) return '';
+    const slash = String(id).lastIndexOf('/');
+    return slash >= 0 ? String(id).slice(slash + 1) : String(id);
+  }
+
+  function fmtCell(v) {
+    if (v == null || v === '') return '—';
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    if (typeof v === 'number' && isFinite(v)) {
+      return Math.abs(v) >= 1000 ? v.toLocaleString(undefined, { maximumFractionDigits: 0 }) : String(v);
+    }
+    return String(v);
+  }
+
+  function parseDataset(data, cfg) {
+    if (!data || !cfg) return null;
+    const xCol = colId(cfg, 'x');
+    const yCol = colId(cfg, 'y');
+    const gCol = colId(cfg, 'group');
+    const dateCol = colId(cfg, 'date');
+    if (!xCol || !yCol || !data[xCol] || !data[yCol]) return null;
+    const n = data[xCol].length;
+    if (!n) return null;
+
+    const rows = [];
+    const points = [];
+    for (let i = 0; i < n; i++) {
+      const rawX = data[xCol][i];
+      const rawY = data[yCol][i];
+      let x = rawX instanceof Date ? rawX.getTime() : Number(rawX);
+      const y = Number(rawY);
+      if (!isFinite(x) || !isFinite(y)) continue;
+      const g = gCol && data[gCol] ? String(data[gCol][i] ?? '') : 'all';
+      const row = {
+        group: g,
+        x: rawX instanceof Date ? rawX : x,
+        y,
+        xNum: x,
+        yNum: y,
+        date: dateCol && data[dateCol] ? data[dateCol][i] : null,
+      };
+      rows.push(row);
+      points.push({ x, y, g, rowIndex: rows.length - 1 });
+    }
+    if (!points.length) return null;
+
+    let plotPoints = points;
+    if (points.length > 2500) {
+      const step = Math.ceil(points.length / 2500);
+      plotPoints = points.filter((_, i) => i % step === 0);
+    }
+
+    const headers = [
+      { key: 'group', label: gCol ? shortColName(gCol) : 'Group' },
+      ...(dateCol ? [{ key: 'date', label: shortColName(dateCol) }] : []),
+      { key: 'x', label: (cfg.xLabel || shortColName(xCol) || 'X') },
+      { key: 'y', label: (cfg.yLabel || shortColName(yCol) || 'Y') },
+    ];
+
+    return { rows, plotPoints, headers };
+  }
+
+  function BrushChart({ points, xLabel, yLabel, onBrushChange }) {
     const hostRef = useRef(null);
-    const svgRef = useRef(null);
-    const [selected, setSelected] = useState(0);
+    const onBrushRef = useRef(onBrushChange);
+    onBrushRef.current = onBrushChange;
 
     useEffect(() => {
       const host = hostRef.current;
@@ -112,41 +191,106 @@
           return x0 <= cx && cx <= x1 && y0 <= cy && cy <= y1;
         }
 
+        function emitSelection(sel) {
+          if (!sel) {
+            onBrushRef.current(null);
+            return;
+          }
+          const [[px0, py0], [px1, py1]] = sel;
+          const x0 = x.invert(px0);
+          const x1 = x.invert(px1);
+          const y0 = y.invert(py0);
+          const y1 = y.invert(py1);
+          onBrushRef.current({
+            x0: Math.min(x0, x1),
+            x1: Math.max(x0, x1),
+            y0: Math.min(y0, y1),
+            y1: Math.max(y0, y1),
+          });
+        }
+
         const brush = d3.brush()
           .extent([[0, 0], [iw, ih]])
           .on('start brush end', (event) => {
             const sel = event.selection;
             if (!sel) {
               dots.classed('selected', false);
-              setSelected(0);
+              emitSelection(null);
               return;
             }
-            let count = 0;
-            dots.classed('selected', (d) => {
-              const hit = isBrushed(sel, x(d.x), y(d.y));
-              if (hit) count++;
-              return hit;
-            });
-            setSelected(count);
+            dots.classed('selected', (d) => isBrushed(sel, x(d.x), y(d.y)));
+            emitSelection(sel);
           });
 
         g.append('g').attr('class', 'brush').call(brush);
-        svgRef.current = svg;
       }
     }, [points, xLabel, yLabel]);
 
-    return h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
-      h('div', { className: 'chart-host', ref: hostRef }),
-      h('div', { className: 'selection-hud' },
-        `Drag a rectangle to brush (D3 Graph Gallery pattern). Selected: ${selected} / ${points.length} points.`
+    return h('div', { className: 'chart-host', ref: hostRef });
+  }
+
+  function filterRowsByBrush(rows, box) {
+    if (!box) return rows;
+    return rows.filter((r) => {
+      const xn = r.xNum != null ? r.xNum : Number(r.x);
+      const yn = r.yNum != null ? r.yNum : Number(r.y);
+      return xn >= box.x0 && xn <= box.x1 && yn >= box.y0 && yn <= box.y1;
+    });
+  }
+
+  function BrushTable({ rows, headers, brushBox, totalRows }) {
+    const brushing = !!brushBox;
+    const filtered = brushing ? filterRowsByBrush(rows, brushBox) : rows;
+    const capped = filtered.length > TABLE_CAP ? filtered.slice(0, TABLE_CAP) : filtered;
+
+    let meta;
+    if (brushing) {
+      meta = `Showing ${filtered.length.toLocaleString()} brushed row${filtered.length === 1 ? '' : 's'}`
+        + (filtered.length > TABLE_CAP ? ` (first ${TABLE_CAP} in table)` : '');
+    } else {
+      meta = `No brush active — all ${totalRows.toLocaleString()} rows. Drag a rectangle on the chart to filter.`
+        + (totalRows > TABLE_CAP ? ` (table shows first ${TABLE_CAP})` : '');
+    }
+
+    return h('div', { className: 'data-table-panel' },
+      h('h3', null, 'Brushed selection (table)'),
+      h('p', { className: 'table-meta' }, meta),
+      h('table', null,
+        h('thead', null,
+          h('tr', null, headers.map((col) => h('th', { key: col.key }, col.label)))
+        ),
+        h('tbody', null,
+          capped.map((row, i) => h('tr', {
+            key: i,
+            className: brushing ? 'brushed' : '',
+          },
+            headers.map((col) => h('td', {
+              key: col.key,
+              className: col.key === 'x' || col.key === 'y' ? 'num' : '',
+            }, fmtCell(row[col.key])))
+          ))
+        )
       )
     );
   }
 
   function App() {
-    const [points, setPoints] = useState(DEMO);
+    const [plotPoints, setPlotPoints] = useState(DEMO);
+    const [rows, setRows] = useState(DEMO_ROWS);
+    const [headers, setHeaders] = useState([
+      { key: 'group', label: 'Species' },
+      { key: 'x', label: 'Sepal length' },
+      { key: 'y', label: 'Petal length' },
+    ]);
     const [xLabel, setXLabel] = useState('Sepal length (demo)');
     const [yLabel, setYLabel] = useState('Petal length (demo)');
+    const [brushBox, setBrushBox] = useState(null);
+
+    const filteredCount = brushBox ? filterRowsByBrush(rows, brushBox).length : 0;
+
+    const handleBrushChange = (box) => {
+      setBrushBox(box);
+    };
 
     useEffect(() => {
       const client = (window.SigmaPlugin && window.SigmaPlugin.client) || (window.Sigma && window.Sigma.client);
@@ -157,6 +301,7 @@
         { name: 'x', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer', 'datetime'] },
         { name: 'y', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
         { name: 'group', type: 'column', source: 'source', allowMultiple: false },
+        { name: 'date', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['datetime', 'date'] },
         { name: 'xLabel', type: 'text', defaultValue: 'X axis' },
         { name: 'yLabel', type: 'text', defaultValue: 'Y axis' },
       ]);
@@ -166,30 +311,51 @@
         if (unsubData) { unsubData(); unsubData = null; }
         setXLabel((cfg && cfg.xLabel) || 'X');
         setYLabel((cfg && cfg.yLabel) || 'Y');
-        const sid = cfg && cfg.source;
+        const sid = elementId(cfg, 'source');
         if (!sid) {
-          setPoints(DEMO);
+          setPlotPoints(DEMO);
+          setRows(DEMO_ROWS);
+          setBrushBox(null);
           return;
         }
         unsubData = client.elements.subscribeToElementData(sid, (data) => {
-          const parsed = parsePoints(data, cfg);
+          const parsed = parseDataset(data, cfg);
           if (parsed) {
-            setPoints(parsed.map((p) => ({
-              ...p,
-              x: p.x instanceof Date ? p.x.getTime() : p.x,
-            })));
-          } else setPoints(DEMO);
+            setPlotPoints(parsed.plotPoints);
+            setRows(parsed.rows);
+            setHeaders(parsed.headers);
+            setBrushBox(null);
+          } else {
+            setPlotPoints(DEMO);
+            setRows(DEMO_ROWS);
+            setBrushBox(null);
+          }
         });
       });
       return () => { if (unsubData) unsubData(); if (unsubCfg) unsubCfg(); };
     }, []);
 
-    return h('div', { id: 'root-inner', style: { height: '100%', display: 'flex', flexDirection: 'column' } },
+    const hudText = brushBox
+      ? `Brushing active — ${filteredCount.toLocaleString()} / ${rows.length.toLocaleString()} rows in selection.`
+      : `Drag a rectangle to brush (D3 Graph Gallery pattern). ${plotPoints.length.toLocaleString()} points plotted.`;
+
+    return h('div', { style: { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 } },
       h('h2', null, 'D3 brush scatter'),
       h('p', { className: 'sub' },
-        'Based on the D3 Graph Gallery brushing scatterplot (#realgraph): drag a box to highlight points. '
+        'Brush the scatterplot; the table below lists only the rows inside your selection.'
       ),
-      h(BrushChart, { points, xLabel, yLabel })
+      h('div', { className: 'main' },
+        h('div', { className: 'chart-wrap' },
+          h(BrushChart, { points: plotPoints, xLabel, yLabel, onBrushChange: handleBrushChange }),
+          h('div', { className: 'selection-hud' }, hudText)
+        ),
+        h(BrushTable, {
+          rows,
+          headers,
+          brushBox,
+          totalRows: rows.length,
+        })
+      )
     );
   }
 
