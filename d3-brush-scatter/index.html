@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WBAC D3 Brush Scatter</title>
+  <style>
+    html, body, #root { margin: 0; width: 100%; height: 100%; background: #f8fafc; font-family: system-ui, sans-serif; }
+    #root { display: flex; flex-direction: column; box-sizing: border-box; padding: 12px 14px; }
+    h2 { margin: 0 0 4px; font-size: 16px; color: #0f172a; }
+    .sub { margin: 0 0 8px; font-size: 12px; color: #64748b; max-width: 70ch; }
+    .chart-host { flex: 1; min-height: 200px; position: relative; }
+    .chart-host svg { display: block; width: 100%; height: 100%; }
+    circle.dot { opacity: 0.55; stroke: #fff; stroke-width: 1px; }
+    circle.dot.selected { opacity: 1 !important; stroke: #0f172a; stroke-width: 1.5px; }
+    .selection-hud {
+      font-size: 12px; color: #334155; padding: 6px 0 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@sigmacomputing/plugin"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script>
+(function () {
+  const { useState, useEffect, useRef, createElement: h } = React;
+
+  const DEMO = d3.range(120).map((i) => ({
+    x: 4 + Math.random() * 4,
+    y: Math.random() * 9,
+    g: ['setosa', 'versicolor', 'virginica'][i % 3],
+    label: 'demo-' + i,
+  }));
+
+  const PALETTE = ['#440154', '#21908d', '#fde725', '#3b82f6', '#ef4444', '#a855f7', '#14b8a6'];
+
+  function parsePoints(data, cfg) {
+    if (!data || !cfg || !cfg.x || !cfg.y) return null;
+    const n = (data[cfg.x] || []).length;
+    if (!n) return null;
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const x = Number(data[cfg.x][i]);
+      const y = Number(data[cfg.y][i]);
+      if (!isFinite(x) || !isFinite(y)) continue;
+      const g = cfg.group && data[cfg.group] ? String(data[cfg.group][i] ?? '') : 'all';
+      pts.push({ x, y, g, label: g + '-' + i });
+    }
+    if (pts.length > 2500) {
+      const step = Math.ceil(pts.length / 2500);
+      return pts.filter((_, i) => i % step === 0);
+    }
+    return pts.length ? pts : null;
+  }
+
+  function BrushChart({ points, xLabel, yLabel }) {
+    const hostRef = useRef(null);
+    const svgRef = useRef(null);
+    const [selected, setSelected] = useState(0);
+
+    useEffect(() => {
+      const host = hostRef.current;
+      if (!host || !points.length) return;
+
+      host.innerHTML = '';
+      const ro = new ResizeObserver(() => draw());
+      ro.observe(host);
+      draw();
+      return () => ro.disconnect();
+
+      function draw() {
+        const rect = host.getBoundingClientRect();
+        const width = Math.max(280, rect.width);
+        const height = Math.max(220, rect.height);
+        const margin = { top: 12, right: 18, bottom: 36, left: 52 };
+        const iw = width - margin.left - margin.right;
+        const ih = height - margin.top - margin.bottom;
+
+        d3.select(host).selectAll('svg').remove();
+        const svg = d3.select(host).append('svg').attr('width', width).attr('height', height);
+        const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+        const x = d3.scaleLinear()
+          .domain(d3.extent(points, (d) => d.x)).nice()
+          .range([0, iw]);
+        const y = d3.scaleLinear()
+          .domain(d3.extent(points, (d) => d.y)).nice()
+          .range([ih, 0]);
+
+        const groups = [...new Set(points.map((d) => d.g))];
+        const color = d3.scaleOrdinal().domain(groups).range(PALETTE);
+
+        g.append('g').attr('transform', `translate(0,${ih})`).call(d3.axisBottom(x).ticks(8));
+        g.append('g').call(d3.axisLeft(y).ticks(8));
+        g.append('text').attr('x', iw / 2).attr('y', ih + 30).attr('text-anchor', 'middle')
+          .attr('fill', '#64748b').attr('font-size', 11).text(xLabel || 'X');
+        g.append('text').attr('transform', 'rotate(-90)').attr('x', -ih / 2).attr('y', -42)
+          .attr('text-anchor', 'middle').attr('fill', '#64748b').attr('font-size', 11).text(yLabel || 'Y');
+
+        const dots = g.append('g').selectAll('circle').data(points).join('circle')
+          .attr('class', 'dot')
+          .attr('cx', (d) => x(d.x))
+          .attr('cy', (d) => y(d.y))
+          .attr('r', 6)
+          .attr('fill', (d) => color(d.g));
+
+        function isBrushed(sel, cx, cy) {
+          const [[x0, y0], [x1, y1]] = sel;
+          return x0 <= cx && cx <= x1 && y0 <= cy && cy <= y1;
+        }
+
+        const brush = d3.brush()
+          .extent([[0, 0], [iw, ih]])
+          .on('start brush end', (event) => {
+            const sel = event.selection;
+            if (!sel) {
+              dots.classed('selected', false);
+              setSelected(0);
+              return;
+            }
+            let count = 0;
+            dots.classed('selected', (d) => {
+              const hit = isBrushed(sel, x(d.x), y(d.y));
+              if (hit) count++;
+              return hit;
+            });
+            setSelected(count);
+          });
+
+        g.append('g').attr('class', 'brush').call(brush);
+        svgRef.current = svg;
+      }
+    }, [points, xLabel, yLabel]);
+
+    return h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
+      h('div', { className: 'chart-host', ref: hostRef }),
+      h('div', { className: 'selection-hud' },
+        `Drag a rectangle to brush (D3 Graph Gallery pattern). Selected: ${selected} / ${points.length} points.`
+      )
+    );
+  }
+
+  function App() {
+    const [points, setPoints] = useState(DEMO);
+    const [xLabel, setXLabel] = useState('Sepal length (demo)');
+    const [yLabel, setYLabel] = useState('Petal length (demo)');
+
+    useEffect(() => {
+      const client = (window.SigmaPlugin && window.SigmaPlugin.client) || (window.Sigma && window.Sigma.client);
+      if (!client) return;
+
+      client.config.configureEditorPanel([
+        { name: 'source', type: 'element' },
+        { name: 'x', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer', 'datetime'] },
+        { name: 'y', type: 'column', source: 'source', allowMultiple: false, allowedTypes: ['number', 'integer'] },
+        { name: 'group', type: 'column', source: 'source', allowMultiple: false },
+        { name: 'xLabel', type: 'text', defaultValue: 'X axis' },
+        { name: 'yLabel', type: 'text', defaultValue: 'Y axis' },
+      ]);
+
+      let unsubData = null;
+      const unsubCfg = client.config.subscribe((cfg) => {
+        if (unsubData) { unsubData(); unsubData = null; }
+        setXLabel((cfg && cfg.xLabel) || 'X');
+        setYLabel((cfg && cfg.yLabel) || 'Y');
+        const sid = cfg && cfg.source;
+        if (!sid) {
+          setPoints(DEMO);
+          return;
+        }
+        unsubData = client.elements.subscribeToElementData(sid, (data) => {
+          const parsed = parsePoints(data, cfg);
+          if (parsed) {
+            setPoints(parsed.map((p) => ({
+              ...p,
+              x: p.x instanceof Date ? p.x.getTime() : p.x,
+            })));
+          } else setPoints(DEMO);
+        });
+      });
+      return () => { if (unsubData) unsubData(); if (unsubCfg) unsubCfg(); };
+    }, []);
+
+    return h('div', { id: 'root-inner', style: { height: '100%', display: 'flex', flexDirection: 'column' } },
+      h('h2', null, 'D3 brush scatter'),
+      h('p', { className: 'sub' },
+        'Based on the D3 Graph Gallery brushing scatterplot (#realgraph): drag a box to highlight points. '
+      ),
+      h(BrushChart, { points, xLabel, yLabel })
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+})();
+  </script>
+</body>
+</html>
