@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WBAC MBP Thunderdome</title>
+  <title>WBAC MBP Thunderdome v3</title>
   <style>
     html, body, #root {
       margin: 0;
@@ -76,6 +76,65 @@
       border-color: rgba(56, 189, 248, 0.55);
       box-shadow: 0 0 30px rgba(56, 189, 248, 0.25);
     }
+    .rank-panel {
+      flex: 0 0 38%;
+      min-height: 140px;
+      max-height: 42%;
+      overflow-y: auto;
+      padding: 8px 16px 12px;
+      background: linear-gradient(180deg, rgba(7, 11, 20, 0) 0%, rgba(7, 11, 20, 0.95) 12%);
+      border-top: 1px solid rgba(148, 163, 184, 0.2);
+      pointer-events: auto;
+    }
+    .rank-row {
+      display: grid;
+      grid-template-columns: 88px 1fr 72px;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 6px;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 8px;
+    }
+    .rank-row:hover, .rank-row.active {
+      background: rgba(56, 189, 248, 0.12);
+    }
+    .rank-name {
+      color: #e2e8f0;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .rank-track {
+      height: 10px;
+      background: rgba(30, 41, 59, 0.9);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .rank-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.35s ease;
+    }
+    .rank-pct {
+      color: #94a3b8;
+      font-size: 11px;
+      text-align: right;
+    }
+    .arena-wrap {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+    }
+    .arena-canvas-wrap {
+      flex: 1 1 58%;
+      position: relative;
+      min-height: 180px;
+    }
   </style>
 </head>
 <body>
@@ -120,8 +179,8 @@
       cur.opens += r.opens;
       map.set(key, cur);
     });
-    let out = Array.from(map.values()).sort((a, b) => b.sent - a.sent);
-    const TOP = 14;
+    let out = Array.from(map.values()).filter((r) => r.sent > 0).sort((a, b) => b.sent - a.sent);
+    const TOP = 10;
     if (out.length > TOP) {
       const head = out.slice(0, TOP);
       const tail = out.slice(TOP);
@@ -172,18 +231,107 @@
     return rows.length ? aggregateByMbp(rows) : null;
   }
 
+  function computeLayout(sorted, w, h) {
+    const n = sorted.length;
+    if (!n) return [];
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    const minDim = Math.min(w, h);
+    const maxSent = Math.max(...sorted.map((r) => r.sent), 1);
+    const rMin = minDim * 0.028;
+    const rMax = minDim * 0.052;
+    const orbit = minDim * (n <= 5 ? 0.26 : 0.3);
+    const nodes = sorted.map((row, i) => {
+      const share = row.sent / maxSent;
+      const radius = rMin + Math.sqrt(share) * (rMax - rMin);
+      const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+      return {
+        row,
+        radius,
+        x: cx + Math.cos(angle) * orbit,
+        y: cy + Math.sin(angle) * orbit * 0.92,
+      };
+    });
+    for (let iter = 0; iter < 100; iter++) {
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const a = nodes[i];
+          const b = nodes[j];
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+          let dist = Math.hypot(dx, dy);
+          if (dist < 1e-3) {
+            dist = 1e-3;
+            dx = 1;
+            dy = 0;
+          }
+          const need = a.radius + b.radius + 10;
+          if (dist < need) {
+            const push = (need - dist) * 0.55;
+            const ux = dx / dist;
+            const uy = dy / dist;
+            a.x -= ux * push;
+            a.y -= uy * push;
+            b.x += ux * push;
+            b.y += uy * push;
+          }
+        }
+      }
+      nodes.forEach((node) => {
+        node.x = cx + (node.x - cx) * 0.992;
+        node.y = cy + (node.y - cy) * 0.992;
+      });
+    }
+    return nodes;
+  }
+
+  function RankBars({ rows, focus, setFocus, maxSent }) {
+    const top = rows.slice(0, 8);
+    return h(
+      'div',
+      { className: 'rank-panel' },
+      top.map((row) => {
+        const rate = bounceRate(row.sent, row.bounced);
+        const active = focus && focus.mbp === row.mbp;
+        const widthPct = maxSent > 0 ? Math.max(2, (row.sent / maxSent) * 100) : 0;
+        return h(
+          'div',
+          {
+            key: row.mbp,
+            className: 'rank-row' + (active ? ' active' : ''),
+            onClick: () => setFocus(row),
+          },
+          h('div', { className: 'rank-name', title: row.mbp }, row.mbp),
+          h(
+            'div',
+            { className: 'rank-track' },
+            h('div', {
+              className: 'rank-fill',
+              style: { width: widthPct + '%', background: colorForRate(rate) },
+            })
+          ),
+          h('div', { className: 'rank-pct' }, (rate * 100).toFixed(2) + '%')
+        );
+      })
+    );
+  }
+
   function Arena({ rows, title, focus, setFocus }) {
     const canvasRef = useRef(null);
     const animRef = useRef(0);
     const sizeRef = useRef({ w: 800, h: 500 });
+    const layoutRef = useRef([]);
+
+    const sorted = useMemo(() => [...rows].sort((a, b) => b.sent - a.sent), [rows]);
+    const maxSent = sorted[0]?.sent || 1;
 
     const stats = useMemo(() => {
       const totalSent = rows.reduce((a, r) => a + r.sent, 0);
       const totalBounced = rows.reduce((a, r) => a + r.bounced, 0);
       const avgBounce = bounceRate(totalSent, totalBounced);
-      const leader = rows.reduce((best, r) => (r.sent > (best?.sent || 0) ? r : best), null);
-      return { totalSent, totalBounced, avgBounce, leader };
-    }, [rows]);
+      const leader = sorted[0] || null;
+      return { totalSent, totalBounced, avgBounce, leader, count: rows.length };
+    }, [rows, sorted]);
 
     useEffect(() => {
       const canvas = canvasRef.current;
@@ -209,56 +357,49 @@
         ctx.fillRect(0, 0, w, h);
 
         const cx = w * 0.5;
-        const cy = h * 0.54;
-        const maxR = Math.min(w, h) * 0.38;
+        const cy = h * 0.5;
+        const nodes = computeLayout(sorted, w, h);
+        layoutRef.current = nodes;
 
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 2; i++) {
           ctx.beginPath();
-          ctx.strokeStyle = `rgba(56, 189, 248, ${0.08 + i * 0.04})`;
+          ctx.strokeStyle = `rgba(56, 189, 248, ${0.1 + i * 0.05})`;
           ctx.lineWidth = 1;
-          ctx.arc(cx, cy, maxR * (0.55 + i * 0.22) + Math.sin(t * 0.8 + i) * 4, 0, Math.PI * 2);
+          const guideR = Math.min(w, h) * (0.22 + i * 0.1) + Math.sin(t * 0.6 + i) * 2;
+          ctx.arc(cx, cy, guideR, 0, Math.PI * 2);
           ctx.stroke();
         }
 
-        const maxSent = Math.max(...rows.map((r) => r.sent), 1);
-        const sorted = [...rows].sort((a, b) => b.sent - a.sent);
-        const n = sorted.length;
-
-        sorted.forEach((row, idx) => {
-          const angle = (idx / n) * Math.PI * 2 - Math.PI / 2 + Math.sin(t * 0.35 + idx) * 0.06;
-          const ring = idx === 0 ? 0.18 : 0.38 + ((idx - 1) % 3) * 0.14;
-          const dist = maxR * ring;
-          const x = cx + Math.cos(angle) * dist;
-          const y = cy + Math.sin(angle) * dist * 0.85;
-          const share = row.sent > 0 ? Math.log10(row.sent + 1) / Math.log10(maxSent + 1) : 0;
-          const radius = 12 + share * 52;
+        nodes.forEach((node, idx) => {
+          const { row, x, y, radius } = node;
           const rate = bounceRate(row.sent, row.bounced);
           const isFocus = focus && focus.mbp === row.mbp;
-          const pulse = 1 + (isFocus ? 0.08 : 0.04) * Math.sin(t * 3 + idx);
+          const pulse = 1 + (isFocus ? 0.06 : 0.02) * Math.sin(t * 2.5 + idx);
+          const r = radius * pulse;
+          const labelR = r + 14;
+          const ang = Math.atan2(y - cy, x - cx);
+          const lx = x + Math.cos(ang) * labelR;
+          const ly = y + Math.sin(ang) * labelR;
 
-          const grd = ctx.createRadialGradient(x, y, radius * 0.1, x, y, radius * pulse);
-          grd.addColorStop(0, colorForRate(rate * 0.65));
-          grd.addColorStop(1, colorForRate(rate));
           ctx.beginPath();
-          ctx.fillStyle = grd;
-          ctx.globalAlpha = isFocus ? 1 : 0.88;
-          ctx.arc(x, y, radius * pulse, 0, Math.PI * 2);
+          ctx.fillStyle = colorForRate(rate);
+          ctx.globalAlpha = isFocus ? 1 : 0.9;
+          ctx.arc(x, y, r, 0, Math.PI * 2);
           ctx.fill();
           ctx.globalAlpha = 1;
 
-          if (isFocus) {
-            ctx.beginPath();
-            ctx.strokeStyle = 'rgba(56, 189, 248, 0.9)';
-            ctx.lineWidth = 2;
-            ctx.arc(x, y, radius * pulse + 6, 0, Math.PI * 2);
-            ctx.stroke();
-          }
+          ctx.beginPath();
+          ctx.strokeStyle = isFocus ? '#38bdf8' : 'rgba(248, 250, 252, 0.35)';
+          ctx.lineWidth = isFocus ? 2.5 : 1;
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.stroke();
 
-          ctx.fillStyle = '#f8fafc';
-          ctx.font = `${Math.max(10, radius * 0.22)}px sans-serif`;
-          ctx.textAlign = 'center';
+          ctx.fillStyle = '#f1f5f9';
+          ctx.font = '600 11px sans-serif';
+          ctx.textAlign = Math.cos(ang) > 0.2 ? 'left' : Math.cos(ang) < -0.2 ? 'right' : 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(row.mbp, x, y);
+          const short = row.mbp.length > 14 ? row.mbp.slice(0, 12) + '…' : row.mbp;
+          ctx.fillText(short, lx, ly);
         });
 
         animRef.current = requestAnimationFrame(draw);
@@ -274,65 +415,59 @@
         cancelAnimationFrame(animRef.current);
         ro.disconnect();
       };
-    }, [rows, focus]);
+    }, [sorted, focus]);
 
     const focused = focus || stats.leader;
 
-    return h('div', { style: { width: '100%', height: '100%', position: 'relative' } },
-      h('canvas', { ref: canvasRef }),
-      h('div', { className: 'hud' },
-        h('div', { className: 'hud-top' },
-          h('h1', null, title || 'MBP Thunderdome'),
-          h('p', null, 'Orb size = send volume · Color = bounce rate · Click an orb to spotlight a mailbox provider.')
-        ),
-        h('div', { className: 'hud-bottom' },
-          h('div', { className: 'chip' },
-            h('strong', null, 'Total sent'),
-            h('span', null, fmt(stats.totalSent))
+    return h('div', { className: 'arena-wrap' },
+      h('div', { className: 'arena-canvas-wrap' },
+        h('canvas', { ref: canvasRef }),
+        h('div', { className: 'hud' },
+          h('div', { className: 'hud-top' },
+            h('h1', null, title || 'MBP Thunderdome'),
+            h('p', null, 'Ring = one MBP per dot (size ≈ sends, color = bounce). Use the rank list below — click any row to spotlight.')
           ),
-          h('div', { className: 'chip' },
-            h('strong', null, 'Avg bounce'),
-            h('span', null, (stats.avgBounce * 100).toFixed(2) + '%')
-          ),
-          focused && h('div', { className: 'chip focus-card' },
-            h('strong', null, focused.mbp),
-            h('span', null, (bounceRate(focused.sent, focused.bounced) * 100).toFixed(2) + '% bounce')
-          ),
-          h('div', { className: 'legend' },
-            h('i'), 'Healthy → stressed'
+          h('div', { className: 'hud-bottom' },
+            h('div', { className: 'chip' },
+              h('strong', null, 'Providers'),
+              h('span', null, String(stats.count))
+            ),
+            h('div', { className: 'chip' },
+              h('strong', null, 'Total sent'),
+              h('span', null, fmt(stats.totalSent))
+            ),
+            h('div', { className: 'chip' },
+              h('strong', null, 'Avg bounce'),
+              h('span', null, (stats.avgBounce * 100).toFixed(2) + '%')
+            ),
+            focused && h('div', { className: 'chip focus-card' },
+              h('strong', null, focused.mbp),
+              h('span', null, (bounceRate(focused.sent, focused.bounced) * 100).toFixed(2) + '% bounce')
+            ),
+            h('div', { className: 'legend' },
+              h('i'), 'Healthy → stressed'
+            )
           )
-        )
+        ),
+        h(ClickLayer, { layoutRef, focus, setFocus, canvasRef })
       ),
-      h(ClickLayer, { rows, focus, setFocus, canvasRef, sizeRef })
+      h(RankBars, { rows: sorted, focus, setFocus, maxSent })
     );
   }
 
-  function ClickLayer({ rows, focus, setFocus, canvasRef, sizeRef }) {
+  function ClickLayer({ layoutRef, focus, setFocus, canvasRef }) {
     const onClick = (e) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      const { w, h } = sizeRef.current;
-      const cx = w * 0.5;
-      const cy = h * 0.54;
-      const maxR = Math.min(w, h) * 0.38;
-      const maxSent = Math.max(...rows.map((r) => r.sent), 1);
-      const sorted = [...rows].sort((a, b) => b.sent - a.sent);
-      const n = sorted.length;
+      const nodes = layoutRef.current || [];
       let hit = null;
-      sorted.forEach((row, idx) => {
-        const angle = (idx / n) * Math.PI * 2 - Math.PI / 2;
-        const ring = idx === 0 ? 0.18 : 0.38 + ((idx - 1) % 3) * 0.14;
-        const dist = maxR * ring;
-        const ox = cx + Math.cos(angle) * dist;
-        const oy = cy + Math.sin(angle) * dist * 0.85;
-        const share = row.sent > 0 ? Math.log10(row.sent + 1) / Math.log10(maxSent + 1) : 0;
-        const radius = 12 + share * 52;
-        const dx = x - ox;
-        const dy = y - oy;
-        if (dx * dx + dy * dy <= radius * radius) hit = row;
+      nodes.forEach((node) => {
+        const dx = x - node.x;
+        const dy = y - node.y;
+        if (dx * dx + dy * dy <= node.radius * node.radius) hit = node.row;
       });
       setFocus(hit || focus);
     };
